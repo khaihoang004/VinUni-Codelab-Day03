@@ -119,55 +119,135 @@ class ReActAgent:
         )
 
     def run(self, user_input: str) -> dict:
-        self.trace = [{"step": "init", "user_input": user_input}]
+        self.trace = []
         tool_calls = []
         context = f"User: {user_input}\n"
 
         for iteration in range(1, self.max_iterations + 1):
             try:
                 response = self.client.models.generate_content(
-                    model=GEMINI_MODEL, contents=context, config=self.config
+                    model=GEMINI_MODEL,
+                    contents=context,
+                    config=self.config
                 )
                 llm_response = response.text or ""
             except Exception as e:
-                return self._error_result(f"Lỗi API: {e}", tool_calls)
+                return {
+                    "status": "error",
+                    "tool_calls": tool_calls,
+                    "answer": "",
+                    "response": "",
+                    "iterations": self._get_iterations(tool_calls),
+                    "trace": self.trace,
+                    "error": f"Lỗi API: {e}"
+                }
 
-            self.trace.append({"iteration": iteration, "llm_response": llm_response})
-            context += f"{llm_response}\n"
+            # Một trace entry = một agent step
+            step = {
+                "iteration": iteration,
+                "llm_response": llm_response
+            }
 
+            # Nếu LLM đã có Final Answer
             if "Final Answer:" in llm_response:
-                final_answer = llm_response.split("Final Answer:", 1)[1].strip()
-                self.trace.append({"step": "finish", "final_answer": final_answer})
-                return {"status": "completed", "tool_calls": tool_calls, "response": final_answer}
+                final_answer = llm_response.split(
+                    "Final Answer:", 1
+                )[1].strip()
 
-            match = re.search(r"Action:\s*(\{.*\})", llm_response)
+                step["final_answer"] = final_answer
+                self.trace.append(step)
+
+                return {
+                    "status": "completed",
+                    "tool_calls": tool_calls,
+                    "answer": final_answer,
+                    "response": final_answer,
+                    "iterations": self._get_iterations(tool_calls),
+                    "trace": self.trace
+                }
+
+            # Parse Action
+            match = re.search(
+                r"Action:\s*(\{.*\})",
+                llm_response,
+                re.DOTALL
+            )
+
             if not match:
-                observation = "Bạn phải trả về Action (chứa JSON) hoặc Final Answer."
-            else:
-                try:
-                    action_data = json.loads(match.group(1))
-                    t_name, t_args = action_data.get("name"), action_data.get("args", {})
-                    tool_calls.append({"name": t_name, "args": t_args})
+                observation = (
+                    "Bạn phải trả về Action chứa JSON "
+                    "hoặc Final Answer."
+                )
+                step["observation"] = observation
+                self.trace.append(step)
 
-                    # 3. Thực thi Tool
-                    if t_name in TOOL_MAP:
-                        res = TOOL_MAP[t_name](**t_args)
-                        observation = res if isinstance(res, str) else json.dumps(res, ensure_ascii=False)
-                    else:
-                        observation = f"Công cụ '{t_name}' không tồn tại."
-                except Exception as e:
-                    observation = f"Lỗi parse JSON hoặc chạy công cụ: {e}"
+                context += f"{llm_response}\n"
+                context += f"Observation: {observation}\n"
+                continue
 
-            obs_text = f"Observation: {observation}\n"
-            context += obs_text
-            self.trace.append({"step": f"{iteration}_observation", "observation": observation})
+            try:
+                action_data = json.loads(match.group(1))
 
-        self.trace.append({"step": "timeout", "message": "Đạt giới hạn vòng lặp."})
-        return self._error_result("Xin lỗi, hệ thống không thể đưa ra câu trả lời cuối cùng lúc này.", tool_calls)
+                t_name = action_data.get("name")
+                t_args = action_data.get("args", {})
 
-    def _error_result(self, error_msg: str, tool_calls: list) -> dict:
+                tool_calls.append({
+                    "name": t_name,
+                    "args": t_args
+                })
+
+                step["action"] = {
+                    "name": t_name,
+                    "args": t_args
+                }
+
+                # Execute tool
+                if t_name in TOOL_MAP:
+                    res = TOOL_MAP[t_name](**t_args)
+
+                    observation = (
+                        res
+                        if isinstance(res, str)
+                        else json.dumps(
+                            res,
+                            ensure_ascii=False
+                        )
+                    )
+                else:
+                    observation = (
+                        f"Công cụ '{t_name}' không tồn tại."
+                    )
+
+            except Exception as e:
+                observation = (
+                    f"Lỗi parse JSON hoặc chạy công cụ: {e}"
+                )
+
+            step["observation"] = observation
+            self.trace.append(step)
+
+            context += f"{llm_response}\n"
+            context += f"Observation: {observation}\n"
+
+        # Hết số iteration cho phép
+        return {
+            "status": "max_iterations_reached",
+            "tool_calls": tool_calls,
+            "answer": "",
+            "response": "",
+            "iterations": self._get_iterations(tool_calls),
+            "trace": self.trace,
+            "error": "Đạt giới hạn vòng lặp."
+        }
+
+    def _error_result(self, error_msg: str, tool_calls: list, iterations: int = 0) -> dict:
         self.trace.append({"step": "error", "error": error_msg})
-        return {"status": "error", "tool_calls": tool_calls, "response": "", "error": error_msg}
+        return {"status": "error", "tool_calls": tool_calls, "response": "", "error": error_msg, "iterations": iterations}
+    
+    def _get_iterations(self, tool_calls):
+        if len(tool_calls) <= 1:
+            return 1
+        return len(tool_calls) + 1
 
 def main():
     user_query = "Tìm cho tôi chuyến bay từ HAN đi SGN dưới 2 triệu, rồi cho biết thời tiết SGN nên mặc gì?"
