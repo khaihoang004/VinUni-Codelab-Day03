@@ -22,7 +22,7 @@ Observation: <Kết quả từ tool>
 Final Answer: <Câu trả lời hoàn chỉnh cho khách hàng>
 """
 
-GEMINI_MODEL = "gemini-3.6-flash"
+GEMINI_MODEL = "gemini-3.1-flash-lite"
 
 class ChatbotBaseline:
     """Baseline LLM Chatbot (Không sử dụng ReAct Loop hay Tools)"""
@@ -140,7 +140,7 @@ class ReActAgent:
                 self.trace.append({"step": "finish", "final_answer": final_answer})
                 return {"status": "completed", "tool_calls": tool_calls, "response": final_answer}
 
-            match = re.search(r"Action:\s*(\{.*?\})", llm_response, re.DOTALL)
+            match = re.search(r"Action:\s*(\{.*\})", llm_response)
             if not match:
                 observation = "Bạn phải trả về Action (chứa JSON) hoặc Final Answer."
             else:
